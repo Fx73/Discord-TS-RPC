@@ -1,11 +1,11 @@
 'use strict';
 
-/* eslint-disable no-console */
+import * as path from 'path';
+import * as url from 'url';
 
-const { app, BrowserWindow } = require('electron');
-const path = require('path');
-const url = require('url');
-const DiscordRPC = require('../');
+import { BrowserWindow, app } from 'electron';
+
+import { RPCClient } from '../src/client';
 
 let mainWindow;
 
@@ -47,9 +47,9 @@ app.on('activate', () => {
 const clientId = '280984871685062656';
 
 // Only needed if you want to use spectate, join, or ask to join
-DiscordRPC.register(clientId);
+// TODO : DiscordRPC.register(clientId);
 
-const rpc = new DiscordRPC.Client({ transport: 'ipc' });
+const rpc = new RPCClient(clientId, { transport: 'ipc' });
 const startTimestamp = new Date();
 
 async function setActivity() {
@@ -73,13 +73,16 @@ async function setActivity() {
   });
 }
 
-rpc.on('ready', () => {
-  setActivity();
-
-  // activity can only be set every 15 seconds
-  setInterval(() => {
+rpc.$rpcStatus.subscribe((msg) => {
+  if (msg.status === 'ready') {
+    console.log('RPC connected!');
     setActivity();
-  }, 15e3);
+
+    // activity can only be set every 15 seconds
+    setInterval(() => {
+      setActivity();
+    }, 15e3);
+  }
 });
 
-rpc.login({ clientId }).catch(console.error);
+rpc.login({}).catch(console.error);
