@@ -1,88 +1,46 @@
-'use strict';
-
-import * as path from 'path';
-import * as url from 'url';
-
-import { BrowserWindow, app } from 'electron';
+//import { RPCClient } from '@discord-rpc-ts';
 
 import { RPCClient } from '../src/client';
 
-let mainWindow;
-
-function createWindow() {
-  mainWindow = new BrowserWindow({
-    width: 340,
-    height: 380,
-    resizable: false,
-    titleBarStyle: 'hidden',
-    webPreferences: {
-      nodeIntegration: true,
-    },
-  });
-
-  mainWindow.loadURL(url.format({
-    pathname: path.join(__dirname, 'index.html'),
-    protocol: 'file:',
-    slashes: true,
-  }));
-
-  mainWindow.on('closed', () => {
-    mainWindow = null;
-  });
+const discordConfig = {
+    clientId: '280984871685062656',
 }
 
-app.on('ready', createWindow);
+let count = 0
 
-app.on('window-all-closed', () => {
-  app.quit();
-});
+function updateActivity(rpc: RPCClient) {
+    const startTimestamp = new Date(new Date().getTime() - (Math.floor(Math.random() * 10000) * 1000));
 
-app.on('activate', () => {
-  if (mainWindow === null) {
-    createWindow();
-  }
-});
+    rpc.setActivity({
+        details: `Everyone here is horrid, except me and probably you`,
+        state: `Playing with Discord Status ${count}`,
+        startTimestamp: startTimestamp,
+        largeImageKey: 'snek_large',
+        largeImageText: 'tea is delicious',
+        smallImageKey: 'snek_small',
+        smallImageText: 'i am my own pillows',
+        instance: false,
+    });
 
-// Set this to your Client ID.
-const clientId = '280984871685062656';
-
-// Only needed if you want to use spectate, join, or ask to join
-// TODO : DiscordRPC.register(clientId);
-
-const rpc = new RPCClient(clientId, { transport: 'ipc' });
-const startTimestamp = new Date();
-
-async function setActivity() {
-  if (!rpc || !mainWindow) {
-    return;
-  }
-
-  const boops = await mainWindow.webContents.executeJavaScript('window.boops');
-
-  // You'll need to have snek_large and snek_small assets uploaded to
-  // https://discord.com/developers/applications/<application_id>/rich-presence/assets
-  rpc.setActivity({
-    details: `booped ${boops} times`,
-    state: 'in slither party',
-    startTimestamp,
-    largeImageKey: 'snek_large',
-    largeImageText: 'tea is delicious',
-    smallImageKey: 'snek_small',
-    smallImageText: 'i am my own pillows',
-    instance: false,
-  });
+    count++
+    console.log(`[${new Date().toLocaleTimeString()}] Updated Rich Presence ${count}`);
 }
 
-rpc.$rpcStatus.subscribe((msg) => {
-  if (msg.status === 'ready') {
-    console.log('RPC connected!');
-    setActivity();
 
-    // activity can only be set every 15 seconds
+
+
+const scopes = ['rpc', 'rpc.api', 'messages.read'];
+
+const rpc = new RPCClient(discordConfig.clientId, { transport: 'websocket' });
+console.log('Discord RPC Client created');
+
+rpc.$rpcStatus.subscribe(() => {
+    console.log('Discord RPC Client is ready!');
+    updateActivity(rpc);
+
     setInterval(() => {
-      setActivity();
+        updateActivity(rpc);
     }, 15e3);
-  }
 });
 
-rpc.login({}).catch(console.error);
+rpc.login().catch(console.error);

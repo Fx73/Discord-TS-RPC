@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+      "module": "CommonJS",  
+      "moduleResolution": "node",
+      "target": "es2022",
+      "baseUrl": "./",
+      "rootDir": "./",
+      "outDir": "dist",
+      "useDefineForClassFields": false,
+      "paths": {
+        "*": ["src/*"]
+      },
+      "esModuleInterop": true
+    },
+    "include": ["src", "example"]
+  }
+  
