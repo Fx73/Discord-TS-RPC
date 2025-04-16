@@ -1,13 +1,22 @@
+import { GatewayMessage } from '../gateway/gateway-message';
 import { IPCTransport } from "./ipc";
 import { Subject } from "rxjs";
 import { WebSocketTransport } from "./websocket";
 
+export enum TransportState {
+    OPEN = "open",
+    READY = "ready",
+    CLOSE = "close",
+    ERROR = "error",
+}
+
 export interface ITransport {
-    $tMessage: Subject<string>
-    $tStatus: Subject<string>
+
+    $tMessage: Subject<GatewayMessage>
+    $tStatus: Subject<TransportState>
     isOpen: boolean;
 
-    connect(): void;
+    connect(): Promise<void>;
     send(data: any): void;
     close(): void;
 }

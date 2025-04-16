@@ -1,8 +1,12 @@
-import { ITransport, TransportFactory } from "./transport/transport.interface";
+import { ITransport, TransportFactory, TransportState } from "./transport/transport.interface";
 import { RPCCommands, RPCEvents, RelationshipTypes } from "./constants";
 import { getPid, uuid4122 } from "./util";
 
+import { DiscordGatewayAuth } from './gateway/gateway-auth';
+import { DiscordPresence } from "gateway/discord-presence";
+import { GatewayMessage } from "./gateway/gateway-message";
 import { Subject } from "rxjs";
+import os from "os";
 
 export type RPCLoginOptions = {
   accessToken?: string;
@@ -24,12 +28,13 @@ export class RPCClient {
 
   private transport: ITransport;
 
-  private accessToken: string | null = null;
   private clientId: string | null = null;
   private application = null;
   private user = null;
   private _expecting: Map<any, any> = new Map();
   private _subscriptions: any;
+
+  private gatewayAuth: DiscordGatewayAuth = new DiscordGatewayAuth(this.clientId, '...');
 
   public $rpcStatus = new Subject<{ status: string; timestamp: Date }>();
   public $rpcMessage = new Subject<any>();
@@ -42,7 +47,10 @@ export class RPCClient {
   }
 
 
+
   async login(options: RPCLoginOptions = {}) {
+
+
     await this.connect();
     if (!options.scopes) {
       this.$rpcStatus.next({ status: 'ready', timestamp: new Date() });
@@ -56,31 +64,63 @@ export class RPCClient {
     return this.authenticate(accessToken ?? null);
   }
 
-  connect(): Promise<void> {
-    return new Promise((resolve, reject) => {
-      if (!this.transport) {
-        reject(new Error('Transport not initialized'));
-        return;
+
+
+  public async connect(): Promise<void> {
+    if (!this.transport) {
+      throw new Error('Transport not initialized');
+    }
+
+    if (this.transport.isOpen) {
+      this.transport.close();
+    }
+
+    await this.transport.connect();
+
+    // Wait for the transport to be ready
+    await new Promise<number>((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error("⏳ Timeout : No handshake received")), 10_000);
+      const listener = (state: TransportState) => {
+        if (state === TransportState.READY) {
+          transportSubscription.unsubscribe();
+          clearTimeout(timeout);
+          resolve(0);
+        }
+      };
+      const transportSubscription = this.transport.$tStatus.subscribe(listener);
+    });
+
+    if (!this.gatewayAuth.accessToken)
+      this.gatewayAuth.requestAccessToken()
+
+    this.identify()
+
+    this.$rpcStatus.next({ status: 'ready', timestamp: new Date() });
+  }
+
+
+  private identify() {
+    const getBrowser = () => {
+      const userAgent = navigator.userAgent.toLowerCase();
+      return ["chrome", "firefox", "safari", "edge", "opera", "opr"].find(browser => userAgent.includes(browser)) ?? "unknown";
+    };
+    const systemProperties = {
+      os: os.platform(),
+      browser: getBrowser(),
+      device: os.hostname()
+    };
+
+    const message = new GatewayMessage({
+      op: 2,
+      d: {
+        token: this.gatewayAuth.accessToken,
+        properties: systemProperties,
+        intents: 513,
+        compress: false
       }
-      if (this.transport.isOpen) {
-        resolve();
-        return;
-      }
-      this.transport.connect();
-
-      let timeout = setTimeout(() => reject(new Error('RPC_CONNECTION_TIMEOUT')), 10_000);
-
-      this.transport.$tStatus.subscribe((status) => {
-        clearTimeout(timeout);
-        if (status === 'open')
-          resolve();
-        else
-          reject(new Error('WebSocket error occurred'));
-
-      });
-
     });
   }
+
 
   async authorize({ scopes, clientSecret, rpcToken, redirectUri, prompt }: RPCLoginOptions) {
     if (clientSecret && rpcToken) {
@@ -89,7 +129,7 @@ export class RPCClient {
         client_secret: clientSecret,
       })
 
-      const body = await fetch(`${this.ENDPOINT}${this.PATH}/rpc`, { method: 'POST', body: data, headers: { Authorization: `Bearer ${this.accessToken}` } })
+      const body = await fetch(`${this.ENDPOINT}${this.PATH}/rpc`, { method: 'POST', body: data, headers: { Authorization: `Bearer ${this.gatewayAuth.accessToken}` } })
         .then(async (r) => {
           const body = await r.json();
           if (!r.ok) throw new Error(`HTTP ${r.status}: ${JSON.stringify(body)}`);
@@ -100,23 +140,23 @@ export class RPCClient {
     }
     console.log("CODE NOW")
 
-    const { code } = await this.request('AUTHORIZE', {
+    const authorizeResult = await this.request('AUTHORIZE', {
       scopes,
       client_id: this.clientId,
       prompt,
       rpc_token: rpcToken,
     });
-    console.log(code)
+    console.log(authorizeResult)
 
     const data = new URLSearchParams(Object.entries({
       client_id: this.clientId || '',
       client_secret: clientSecret,
-      code,
+      code: authorizeResult.code,
       grant_type: 'authorization_code',
       redirect_uri: redirectUri || '',
     }))
 
-    const response = await fetch(`${this.ENDPOINT}${this.PATH}`, { method: 'POST', body: data, headers: { Authorization: `Bearer ${this.accessToken}` } })
+    const response = await fetch(`${this.ENDPOINT}${this.PATH}`, { method: 'POST', body: data, headers: { Authorization: `Bearer ${this.gatewayAuth.accessToken}` } })
       .then(async (r) => {
         const body = await r.json();
         if (!r.ok) throw new Error(`HTTP ${r.status}: ${JSON.stringify(body)}`);
@@ -126,7 +166,24 @@ export class RPCClient {
     return response.access_token;
   }
 
+  /**
+   * Authenticate
+   * @param {string} accessToken access token
+   * @returns {Promise}
+   * @private
+   */
+  authenticate(accessToken: string | null) {
+    return this.request('AUTHENTICATE', { access_token: accessToken })
+      .then(({ application, user }) => {
+        this.gatewayAuth.accessToken = accessToken;
+        this.application = application;
+        this.user = user;
+        this.$rpcStatus.next({ status: 'ready', timestamp: new Date() });
+        return this;
+      });
+  }
 
+  //#region Message Handling
   /**
    * Request
    * @param {string} cmd Command
@@ -170,26 +227,12 @@ export class RPCClient {
     }
   }
 
+  //#endregion
 
 
-  /**
-   * Authenticate
-   * @param {string} accessToken access token
-   * @returns {Promise}
-   * @private
-   */
-  authenticate(accessToken: string | null) {
-    return this.request('AUTHENTICATE', { access_token: accessToken })
-      .then(({ application, user }) => {
-        this.accessToken = accessToken;
-        this.application = application;
-        this.user = user;
-        this.$rpcStatus.next({ status: 'ready', timestamp: new Date() });
-        return this;
-      });
-  }
+  //#region Commands
 
-
+  //#region Guilds
   /**
    * Fetch a guild
    * @param {Snowflake} id Guild ID
@@ -233,6 +276,10 @@ export class RPCClient {
     return channels;
   }
 
+  //#endregion
+
+  //#region VoiceChannels
+
   /**
    * @typedef {CertifiedDevice}
    * @prop {string} type One of `AUDIO_INPUT`, `AUDIO_OUTPUT`, `VIDEO_INPUT`
@@ -270,6 +317,7 @@ export class RPCClient {
       })),
     });
   }
+
 
   /**
    * @typedef {UserVoiceSettings}
@@ -412,6 +460,9 @@ export class RPCClient {
       .then(() => stop);
   }
 
+  //#endregion
+
+  //#region Activity
   /**
    * Sets the presence for the logged in user.
    * @param {object} args The rich presence to pass.
@@ -467,8 +518,8 @@ export class RPCClient {
     }
 
     return this.request(RPCCommands["SET_ACTIVITY"], {
-      pid,
-      activity: {
+      clientId: this.clientId,
+      presence: {
         state: args.state,
         details: args.details,
         timestamps,
@@ -479,6 +530,10 @@ export class RPCClient {
         instance: !!args.instance,
       },
     });
+  }
+
+  public setPresence(presence: DiscordPresence) {
+    this.transport.send(presence.toPayload());
   }
 
   /**
@@ -492,6 +547,10 @@ export class RPCClient {
       pid,
     });
   }
+
+  //#endregion
+
+  //#region Invites & Lobby
 
   /**
    * Invite a user to join the game the RPC user is currently playing
@@ -587,6 +646,7 @@ export class RPCClient {
       })));
   }
 
+  //#endregion
 
   async rpcSubscribe(event: any, args: { scopes?: any; client_id?: string | null; prompt?: any; rpc_token?: any; access_token?: any; guild_id?: any; timeout?: any; channel_id?: any; devices?: any; user_id?: any; pan?: any; mute?: any; volume?: any; force?: boolean; automatic_gain_control?: any; echo_cancellation?: any; noise_suppression?: any; qos?: any; silence_warning?: any; deaf?: any; input?: { device_id: any; volume: any; } | undefined; output?: { device_id: any; volume: any; } | undefined; mode?: { type: any; auto_threshold: any; threshold: any; shortcut: any; delay: any; } | undefined; action?: string; pid?: any; activity?: { state: any; details: any; timestamps: { start: any; end: any; } | undefined; assets: { large_image: any; large_text: any; small_image: any; small_text: any; } | undefined; party: { id: any; } | undefined; secrets: { match: any; join: any; spectate: any; } | undefined; buttons: any; instance: boolean; }; type?: any; capacity?: any; metadata?: any; id?: any; owner_id?: any; secret?: any; data?: any; lobby_id?: any; } | undefined): Promise<object> {
     await this.request(RPCCommands["SUBSCRIBE"], args, event);
@@ -594,6 +654,8 @@ export class RPCClient {
       unsubscribe: () => this.request(RPCCommands["UNSUBSCRIBE"], args, event),
     };
   }
+
+  //#endregion
 
   /**
    * Destroy the client

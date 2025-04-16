@@ -1,7 +1,9 @@
+import { ITransport, TransportState } from "./transport.interface";
 import { Socket, createConnection } from 'net'
 
-import { ITransport } from "./transport.interface";
+import { GatewayMessage } from '../gateway/gateway-message';
 import { Subject } from 'rxjs';
+import { resolve } from 'dns';
 
 const OPCodes = {
     HANDSHAKE: 0,
@@ -13,8 +15,8 @@ const OPCodes = {
 
 export class IPCTransport implements ITransport {
 
-    public $tMessage = new Subject<string>()
-    public $tStatus = new Subject<string>()
+    public $tMessage = new Subject<GatewayMessage>()
+    public $tStatus = new Subject<TransportState>()
 
     public isOpen: boolean = false;
 
@@ -28,7 +30,9 @@ export class IPCTransport implements ITransport {
         this.tries = 0;
     }
 
-    public connect() {
+    public async connectGateway() { }
+
+    public connect(): Promise<void> {
         function getIPCPath(id: number) {
             if (process.platform === 'win32') {
                 return `\\\\?\\pipe\\discord-ipc-${id}`;
@@ -48,10 +52,11 @@ export class IPCTransport implements ITransport {
         this.socket.write(this.encode(OPCodes.HANDSHAKE, { v: 1, client_id: this.client.clientId }));
         this.socket.pause();
 
+        return new Promise(() => resolve)
     }
 
     private onOpen() {
-        this.$tStatus.next('open');
+        this.$tStatus.next(TransportState.OPEN);
         this.isOpen = true;
     }
 
@@ -59,11 +64,11 @@ export class IPCTransport implements ITransport {
         if (!event.wasClean) {
             return;
         }
-        this.$tStatus.next('close');
+        this.$tStatus.next(TransportState.CLOSE);
     }
 
     private onError(event: Event) {
-        this.$tStatus.next('error');
+        this.$tStatus.next(TransportState.ERROR);
         if (this.tries > 20) {
             this.socket?.end();
         } else {
@@ -96,7 +101,7 @@ export class IPCTransport implements ITransport {
                     this.$tMessage.next(data);
                     break;
                 case OPCodes.CLOSE:
-                    this.$tStatus.next('close');
+                    this.$tStatus.next(TransportState.CLOSE);
                     break;
                 default:
                     break;
